@@ -1,0 +1,14 @@
+{
+    "defaultSize": "mediano",
+    "allowCommandActivation": true,
+    "usePedestal": true,
+    "spawnAtPlayer": true,
+    "announceCoordinates": true,
+    "mazeDifficulty": "medio",
+    "trapChance": 0.25,
+    "rewardChance": 0.15,
+    "maxPlayers": 10,
+    "mazeDuration": 600,
+    "enableRanking": true,
+    "pedestalBlock": "game:stonepath"
+}
