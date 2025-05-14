@@ -1,0 +1,111 @@
+using Vintagestory.API.Common;
+using Vintagestory.API.Server;
+using Newtonsoft.Json;
+using System;
+using System.IO;
+using Vintagestory.API.MathTools;
+
+[assembly: ModInfo("dynamicmazemod", "dynamicmazemod", Version = "1.0.0", Authors = new[] { "MelliRunH" })]
+
+namespace DynamicMazeMod
+{
+    public class DynamicMazeModSystem : ModSystem
+    {
+        ICoreServerAPI api;
+        public static MazeConfig Config;
+
+        public override void StartServerSide(ICoreServerAPI api)
+        {
+            this.api = api;
+
+            // Cargar el archivo de configuración
+            LoadConfig();
+
+            // Registrar comando /laberinto
+            api.ChatCommands.Create("laberinto")
+                .WithDescription("Inicia el laberinto dinámico en tu posición.")
+                .RequiresPrivilege("gamemode")
+                .HandleWith(OnLaberintoCommand);
+        }
+
+        private void LoadConfig()
+        {
+            // Obtener ruta del mod desde Mod.RootPath
+            string modFolder = Path.Combine(Mod.RootPath, "config.json");
+
+            if (File.Exists(modFolder))
+            {
+                try
+                {
+                    string configContent = File.ReadAllText(modFolder);
+                    Config = JsonConvert.DeserializeObject<MazeConfig>(configContent);
+                }
+                catch (Exception ex)
+                {
+                    api.Server.Logger.Error("Error cargando el archivo config.json: " + ex.Message);
+                    Config = new MazeConfig(); // Config por defecto si hay error
+                }
+            }
+            else
+            {
+                api.Server.Logger.Warning("No se encontró el archivo config.json, usando configuración por defecto.");
+                Config = new MazeConfig(); // Config por defecto
+            }
+        }
+
+        private TextCommandResult OnLaberintoCommand(TextCommandCallingArgs args)
+        {
+            IPlayer player = args.Caller.Player;
+            BlockPos playerPos = player.Entity.Pos.AsBlockPos;
+
+            // Calcular dirección según Yaw manualmente
+            BlockFacing facing = GetFacingFromYaw(player.Entity.Pos.Yaw);
+
+            // Posición donde irá el pedestal
+            BlockPos pedestalPos = playerPos.AddCopy(facing.Normalf.X, 0, facing.Normalf.Z);
+
+            // Colocar el pedestal
+            Block pedestalBlock = api.World.GetBlock(new AssetLocation(Config.pedestalBlock));
+            if (pedestalBlock != null)
+            {
+                api.World.BlockAccessor.SetBlock(pedestalBlock.BlockId, pedestalPos);
+                api.World.BlockAccessor.MarkBlockDirty(pedestalPos);
+            }
+
+            // Mensaje al jugador
+            player.SendMessage(api, "Has iniciado el laberinto dinámico. Apareció un pedestal frente a ti.", EnumChatType.CommandSuccess);
+
+            return TextCommandResult.Success("Laberinto iniciado.");
+        }
+
+        private BlockFacing GetFacingFromYaw(float yaw)
+        {
+            yaw = yaw % 360;
+            if (yaw < 0) yaw += 360;
+
+            if (yaw >= 315 || yaw < 45)
+                return BlockFacing.NORTH;
+            if (yaw >= 45 && yaw < 135)
+                return BlockFacing.EAST;
+            if (yaw >= 135 && yaw < 225)
+                return BlockFacing.SOUTH;
+            return BlockFacing.WEST;
+        }
+    }
+
+    public class MazeConfig
+    {
+        public string defaultSize { get; set; } = "mediano";
+        public bool allowCommandActivation { get; set; } = true;
+        public bool usePedestal { get; set; } = true;
+        public bool spawnAtPlayer { get; set; } = true;
+        public bool announceCoordinates { get; set; } = true;
+        public string mazeDifficulty { get; set; } = "medio";
+        public double trapChance { get; set; } = 0.25;
+        public double rewardChance { get; set; } = 0.15;
+        public int maxPlayers { get; set; } = 10;
+        public int mazeDuration { get; set; } = 600;
+        public bool enableRanking { get; set; } = true;
+        public string pedestalBlock { get; set; } = "game:stonepath";
+    }
+}
