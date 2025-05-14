@@ -10,5 +10,5 @@
     "maxPlayers": 10,
     "mazeDuration": 600,
     "enableRanking": true,
-    "pedestalBlock": "game:stonepath"
+    "pedestalBlock": "game:mudbrick-light"
 }
