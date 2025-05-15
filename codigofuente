@@ -1,111 +1,263 @@
-using Vintagestory.API.Common;
-using Vintagestory.API.Server;
-using Newtonsoft.Json;
 using System;
-using System.IO;
+using System.Collections.Generic;
+using System.Linq;
+using Vintagestory.API.Common;
 using Vintagestory.API.MathTools;
+using Vintagestory.API.Server;
 
-[assembly: ModInfo("dynamicmazemod", "dynamicmazemod", Version = "1.0.0", Authors = new[] { "MelliRunH" })]
-
-namespace DynamicMazeMod
+namespace laberinto
 {
-    public class DynamicMazeModSystem : ModSystem
+    public class MazeGenerator
     {
-        ICoreServerAPI api;
-        public static MazeConfig Config;
+        private readonly ICoreServerAPI api;
+        private readonly int width;
+        private readonly int height;
+        private readonly int wallHeight;
+        private readonly string wallBlockCode;
+        private readonly string floorBlockCode;
+        private readonly string ceilingBlockCode;
+        private readonly string algorithm;
+        private readonly double trapChance;
+        private readonly double rewardChance;
+        private bool[,] maze;
 
-        public override void StartServerSide(ICoreServerAPI api)
+        public MazeGenerator(ICoreServerAPI api, int width, int height, int wallHeight, string wallBlockCode, string floorBlockCode, string ceilingBlockCode, string algorithm, double trapChance, double rewardChance)
         {
             this.api = api;
-
-            // Cargar el archivo de configuración
-            LoadConfig();
-
-            // Registrar comando /laberinto
-            api.ChatCommands.Create("laberinto")
-                .WithDescription("Inicia el laberinto dinámico en tu posición.")
-                .RequiresPrivilege("gamemode")
-                .HandleWith(OnLaberintoCommand);
+            this.width = width % 2 == 0 ? width + 1 : width;
+            this.height = height % 2 == 0 ? height + 1 : height;
+            this.wallHeight = wallHeight;
+            this.wallBlockCode = wallBlockCode;
+            this.floorBlockCode = floorBlockCode;
+            this.ceilingBlockCode = ceilingBlockCode;
+            this.algorithm = algorithm.ToLowerInvariant();
+            this.trapChance = trapChance;
+            this.rewardChance = rewardChance;
         }
 
-        private void LoadConfig()
+        public void Generate(BlockPos origin)
         {
-            // Obtener ruta del mod desde Mod.RootPath
-            string modFolder = Path.Combine(Mod.RootPath, "config.json");
+            maze = new bool[width, height];
 
-            if (File.Exists(modFolder))
+            switch (algorithm)
             {
-                try
+                case "prim":
+                    GenerateWithPrim();
+                    break;
+                case "kruskal":
+                    GenerateWithKruskal();
+                    break;
+                default:
+                    GenerateWithDFS();
+                    break;
+            }
+
+            PlaceBlocks(origin);
+        }
+
+        private void GenerateWithDFS()
+        {
+            Stack<(int x, int y)> stack = new();
+            int startX = 1, startY = 1;
+            maze[startX, startY] = true;
+            stack.Push((startX, startY));
+
+            int[] dx = { 0, 0, -2, 2 };
+            int[] dy = { -2, 2, 0, 0 };
+
+            Random rnd = new();
+
+            while (stack.Count > 0)
+            {
+                var (x, y) = stack.Peek();
+                List<int> dirs = Enumerable.Range(0, 4).OrderBy(_ => rnd.Next()).ToList();
+                bool moved = false;
+
+                foreach (int dir in dirs)
                 {
-                    string configContent = File.ReadAllText(modFolder);
-                    Config = JsonConvert.DeserializeObject<MazeConfig>(configContent);
+                    int nx = x + dx[dir], ny = y + dy[dir];
+                    if (IsInside(nx, ny) && !maze[nx, ny])
+                    {
+                        maze[nx, ny] = true;
+                        maze[x + dx[dir] / 2, y + dy[dir] / 2] = true;
+                        stack.Push((nx, ny));
+                        moved = true;
+                        break;
+                    }
                 }
-                catch (Exception ex)
+
+                if (!moved) stack.Pop();
+            }
+        }
+
+        private void GenerateWithPrim()
+        {
+            Random rnd = new();
+            List<(int x, int y)> walls = new();
+            int startX = 1, startY = 1;
+            maze[startX, startY] = true;
+
+            AddWalls(startX, startY, walls);
+
+            while (walls.Count > 0)
+            {
+                var idx = rnd.Next(walls.Count);
+                var (x, y) = walls[idx];
+                walls.RemoveAt(idx);
+
+                if (!maze[x, y])
                 {
-                    api.Server.Logger.Error("Error cargando el archivo config.json: " + ex.Message);
-                    Config = new MazeConfig(); // Config por defecto si hay error
+                    List<(int dx, int dy)> directions = new()
+                {
+                    (0, -2), (0, 2), (-2, 0), (2, 0)
+                };
+
+                    foreach (var (dx, dy) in directions.OrderBy(_ => rnd.Next()))
+                    {
+                        int nx = x + dx, ny = y + dy;
+                        if (IsInside(nx, ny) && maze[nx, ny])
+                        {
+                            maze[x, y] = true;
+                            maze[(x + nx) / 2, (y + ny) / 2] = true;
+                            AddWalls(x, y, walls);
+                            break;
+                        }
+                    }
                 }
             }
-            else
+        }
+
+        private void AddWalls(int x, int y, List<(int, int)> walls)
+        {
+            int[,] dirs = { { 0, -2 }, { 0, 2 }, { -2, 0 }, { 2, 0 } };
+            foreach (var i in Enumerable.Range(0, 4))
             {
-                api.Server.Logger.Warning("No se encontró el archivo config.json, usando configuración por defecto.");
-                Config = new MazeConfig(); // Config por defecto
+                int nx = x + dirs[i, 0], ny = y + dirs[i, 1];
+                if (IsInside(nx, ny) && !maze[nx, ny])
+                    walls.Add((nx, ny));
             }
         }
 
-        private TextCommandResult OnLaberintoCommand(TextCommandCallingArgs args)
+        private void GenerateWithKruskal()
         {
-            IPlayer player = args.Caller.Player;
-            BlockPos playerPos = player.Entity.Pos.AsBlockPos;
+            int cellCount = ((width - 1) / 2) * ((height - 1) / 2);
+            int[,] cellIds = new int[width, height];
+            int id = 1;
 
-            // Calcular dirección según Yaw manualmente
-            BlockFacing facing = GetFacingFromYaw(player.Entity.Pos.Yaw);
-
-            // Posición donde irá el pedestal
-            BlockPos pedestalPos = playerPos.AddCopy(facing.Normalf.X, 0, facing.Normalf.Z);
-
-            // Colocar el pedestal
-            Block pedestalBlock = api.World.GetBlock(new AssetLocation(Config.pedestalBlock));
-            if (pedestalBlock != null)
+            for (int x = 1; x < width; x += 2)
             {
-                api.World.BlockAccessor.SetBlock(pedestalBlock.BlockId, pedestalPos);
-                api.World.BlockAccessor.MarkBlockDirty(pedestalPos);
+                for (int y = 1; y < height; y += 2)
+                {
+                    cellIds[x, y] = id++;
+                }
             }
 
-            // Mensaje al jugador
-            player.SendMessage(api, "Has iniciado el laberinto dinámico. Apareció un pedestal frente a ti.", EnumChatType.CommandSuccess);
+            List<(int x, int y)> walls = new();
 
-            return TextCommandResult.Success("Laberinto iniciado.");
+            for (int x = 1; x < width - 1; x++)
+            {
+                for (int y = 1; y < height - 1; y++)
+                {
+                    if ((x % 2 == 1 && y % 2 == 0) || (x % 2 == 0 && y % 2 == 1))
+                    {
+                        walls.Add((x, y));
+                    }
+                }
+            }
+
+            Random rnd = new();
+            while (walls.Count > 0)
+            {
+                var idx = rnd.Next(walls.Count);
+                var (x, y) = walls[idx];
+                walls.RemoveAt(idx);
+
+                int x1 = x % 2 == 0 ? x - 1 : x;
+                int y1 = y % 2 == 0 ? y - 1 : y;
+                int x2 = x % 2 == 0 ? x + 1 : x;
+                int y2 = y % 2 == 0 ? y + 1 : y;
+
+                if (!IsInside(x2, y2)) continue;
+
+                int id1 = cellIds[x1, y1];
+                int id2 = cellIds[x2, y2];
+                if (id1 != id2)
+                {
+                    cellIds[x, y] = id1;
+                    cellIds[x2, y2] = id1;
+                    maze[x, y] = maze[x1, y1] = maze[x2, y2] = true;
+
+                    for (int i = 1; i < width; i += 2)
+                    {
+                        for (int j = 1; j < height; j += 2)
+                        {
+                            if (cellIds[i, j] == id2)
+                                cellIds[i, j] = id1;
+                        }
+                    }
+                }
+            }
         }
 
-        private BlockFacing GetFacingFromYaw(float yaw)
+        private void PlaceBlocks(BlockPos origin)
         {
-            yaw = yaw % 360;
-            if (yaw < 0) yaw += 360;
+            var wallBlock = api.World.GetBlock(new AssetLocation(wallBlockCode));
+            var floorBlock = api.World.GetBlock(new AssetLocation(floorBlockCode));
+            var ceilingBlock = api.World.GetBlock(new AssetLocation(ceilingBlockCode));
+            var trapBlock = api.World.GetBlock(new AssetLocation("game:trapdoor-upside"));
+            var chestBlock = api.World.GetBlock(new AssetLocation("game:chest"));
 
-            if (yaw >= 315 || yaw < 45)
-                return BlockFacing.NORTH;
-            if (yaw >= 45 && yaw < 135)
-                return BlockFacing.EAST;
-            if (yaw >= 135 && yaw < 225)
-                return BlockFacing.SOUTH;
-            return BlockFacing.WEST;
+            Random rnd = new();
+
+            for (int x = 0; x < width; x++)
+            {
+                for (int z = 0; z < height; z++)
+                {
+                    BlockPos pos = origin.AddCopy(x, 0, z);
+
+                    // Suelo
+                    api.World.BlockAccessor.SetBlock(floorBlock.BlockId, pos);
+
+                    // Paredes y aire
+                    if (!maze[x, z])
+                    {
+                        for (int y = 0; y < wallHeight; y++)
+                        {
+                            api.World.BlockAccessor.SetBlock(wallBlock.BlockId, pos.UpCopy(y));
+                        }
+                    }
+                    else
+                    {
+                        for (int y = 1; y <= wallHeight; y++)
+                        {
+                            api.World.BlockAccessor.SetBlock(0, pos.UpCopy(y)); // aire
+                        }
+
+                        // Trampas y cofres
+                        if (rnd.NextDouble() < trapChance)
+                        {
+                            api.World.BlockAccessor.SetBlock(trapBlock.BlockId, pos.UpCopy(1));
+                        }
+                        else if (rnd.NextDouble() < rewardChance)
+                        {
+                            api.World.BlockAccessor.SetBlock(chestBlock.BlockId, pos.UpCopy(1));
+                        }
+                    }
+
+                    // Techo
+                    api.World.BlockAccessor.SetBlock(ceilingBlock.BlockId, pos.UpCopy(wallHeight));
+                }
+            }
+
+            // Entrada
+            api.World.BlockAccessor.SetBlock(0, origin.AddCopy(1, 1, 0));
+            // Salida
+            api.World.BlockAccessor.SetBlock(0, origin.AddCopy(width - 2, 1, height - 1));
         }
-    }
 
-    public class MazeConfig
-    {
-        public string defaultSize { get; set; } = "mediano";
-        public bool allowCommandActivation { get; set; } = true;
-        public bool usePedestal { get; set; } = true;
-        public bool spawnAtPlayer { get; set; } = true;
-        public bool announceCoordinates { get; set; } = true;
-        public string mazeDifficulty { get; set; } = "medio";
-        public double trapChance { get; set; } = 0.25;
-        public double rewardChance { get; set; } = 0.15;
-        public int maxPlayers { get; set; } = 10;
-        public int mazeDuration { get; set; } = 600;
-        public bool enableRanking { get; set; } = true;
-        public string pedestalBlock { get; set; } = "game:stonepath";
+        private bool IsInside(int x, int y)
+        {
+            return x > 0 && x < width && y > 0 && y < height;
+        }
     }
 }
