@@ -292,7 +292,7 @@ namespace DynamicMazeMod
                 api.World.BlockAccessor.SetBlock(chestBlock.BlockId, chestPos);
 
                 // Obtener la entidad del bloque cofre para llenarlo
-                if (api.World.BlockAccessor.GetBlockEntity(chestPos) is BlockEntityChest be && be.Inventory != null)
+                if (api.World.BlockAccessor.GetBlockEntity(chestPos) is BlockEntityContainer be && be.Inventory != null)
                 {
                     int lootCount = api.World.Rand.Next(Config.minLootCount, Config.maxLootCount + 1);
 
